@@ -1,0 +1,174 @@
+// Add "Convert Raw Data" Button in Menu
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('Data Analysis')
+      .addItem('Convert Raw Data', 'convertRawData')
+      .addToUi();
+}
+
+// Function to Average Data Set
+function mean(data) {
+  var sum = 0;
+  for(var i = 0; i < data.length; i++) {
+    sum += data[i];
+  }
+  return sum / data.length;
+}
+
+// Function to Calculate Standard Deviation of a Data Set
+function stdev(data, mean) {
+  var sum = 0;
+  for(var i = 0; i < data.length; i++) {
+    sum += Math.pow(data[i] - mean, 2);
+  }
+  return Math.pow(sum / (data.length - 1), 0.5);
+}
+
+// Function to Calculate zscore
+function zscore(value, mean, stdev) {
+  return (value - mean) / stdev;
+}
+
+// Function to Calculate Correlation Coefficient (R)
+function correlationCoefficient(xdata, ydata) {
+  var xbar = mean(xdata);
+  var ybar = mean(ydata);
+  var sx = stdev(xdata, xbar);
+  var sy = stdev(ydata, ybar);
+  var sum = 0;
+  for(var i = 0; i < xdata.length; i++) {
+   sum += zscore(xdata[i], xbar, sx) * zscore(ydata[i], ybar, sy);
+  }
+  
+  return sum / (xdata.length - 1);
+}
+
+// Constructor for a Linear Equation
+// https://www.w3schools.com/JS/js_object_constructors.asp
+// Note: in this code we use the statistical form of a linear equation that follows the pattern y = a + bx
+function LinearEquation(a, b) {
+  this.a = a;
+  this.b = b;
+}
+
+// Function to Calculate a Linear Regression from a Data Set
+function linReg(xdata, ydata) {
+  var xbar = mean(xdata);
+  var ybar = mean(ydata);
+  var sx = stdev(xdata, xbar);
+  var sy = stdev(ydata, ybar);
+  
+  var b = correlationCoefficient(xdata, ydata) * sy / sx;
+  var a = ybar - b * xbar;
+  return new LinearEquation(a, b);
+}
+
+// Define data columns as seen in the sheet for readability
+var load = 0;
+var time = 1;
+var extension = 2;
+var stress = 3;
+var strain = 4;
+
+// Begin data conversion
+function convertRawData() {
+  // Get Spreadsheet Info
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const rawData = spreadsheet.getSheetByName("Raw Data").getDataRange().getValues();
+  const calcData = spreadsheet.getSheetByName("Calculated Data").getDataRange().getValues();
+  const ui = SpreadsheetApp.getUi();
+  
+  const calculatedData = spreadsheet.getSheetByName("Calculated Data");
+  const outputSheet = spreadsheet.getSheetByName("Output");
+
+  // Clear out columns into which the data will be generated
+      // https://stackoverflow.com/questions/9268570/i-need-a-button-to-clear-cells-in-a-google-spreadsheet
+  calculatedData.getRange('I4:I1000').clearContent();
+  calculatedData.getRange('J4:J1000').clearContent();
+  
+  // Initialize Arrays for Inputted Data
+  var loadData = [];
+  var extensionData = [];
+  var stressData = [];
+  var strainData = [];
+  
+  // Fill Arrays with Data from each Column
+  for (var i = 3; i < 1000; i++){
+    if (calcData[i][load] !== ""){
+          // https://www.w3schools.com/jsref/jsref_push.asp
+      loadData.push(calcData[i][load]);
+      extensionData.push(calcData[i][extension]);
+      stressData.push(calcData[i][stress]);
+      strainData.push(calcData[i][strain]);
+    }
+  }
+  
+  /**
+   * Essentially, to get the low strain and high strain elastic moduli, we want to find two
+   * lines of best fit, one for the low region and one for the high region. For our tests,
+   * we decided that the best way of determining these two regressions was to optimize the
+   * sum of the two coefficients of determination so that we could ensure both lines have a
+   * high correlation.
+   */
+  
+  // Initialize Sum of two R^2 Array
+  var coefficientSum = [];
+  
+  // Iterate through the stress/strain data and calculate the R^2 value for each pair of points (within the middle half of the data)
+  for (var i = 0; i < (strainData.length - Math.round((strainData.length * 0.25))); i++){
+    if (i < (Math.round(strainData.length * 0.25))){
+      coefficientSum[i] = 0;
+    }
+    else{
+          // https://www.w3schools.com/jsref/jsref_slice_array.asp
+      coefficientSum[i] = Math.pow(correlationCoefficient(strainData.slice(0, i), stressData.slice(0, i)), 2)
+        + Math.pow(correlationCoefficient(strainData.slice(i), stressData.slice(i)), 2);
+    }
+  }
+  
+  // Find largest R^2 value and its index
+  // https://stackoverflow.com/questions/1669190/find-the-min-max-element-of-an-array-in-javascript
+  var optimal_cutoff = coefficientSum.indexOf(Math.max.apply(null, coefficientSum))
+
+  // Find the R^2 for the first and second slopes
+  var low_strain_coef = Math.pow(correlationCoefficient(strainData.slice(0, optimal_cutoff), stressData.slice(0, optimal_cutoff)), 2);
+  var high_strain_coef = Math.pow(correlationCoefficient(strainData.slice(optimal_cutoff), stressData.slice(optimal_cutoff)), 2);
+  
+  // Perform a linear regression using the optimal cutoff point as found via the largest R^2
+  var optimal_low_modulus = linReg(strainData.slice(0, optimal_cutoff), stressData.slice(0, optimal_cutoff))
+  var optimal_high_modulus = linReg(strainData.slice(optimal_cutoff+1), stressData.slice(optimal_cutoff+1))
+  
+  // Create lines using the linear regression above to be used to visually represent the trend data
+  var low_modulus = [];
+  for (var i = 0; i <= (strainData.length-1); i++){
+    if (i > optimal_cutoff+1){
+      low_modulus[i] = [""];
+    }
+    else{
+      low_modulus[i] = [optimal_low_modulus.a + (optimal_low_modulus.b * strainData[i])]
+    }
+  }
+  
+  var high_modulus = []
+  for (var i = 0; i <= (strainData.length-1); i++){
+    if (i <= optimal_cutoff){
+      high_modulus[i] = [""];
+    }
+    else{
+      high_modulus[i] = [optimal_high_modulus.a + (optimal_high_modulus.b * strainData[i])]
+    }
+  }
+  
+  // Send the linear regressions calcualted into the sheet to be plotted for visual representation
+      // https://stackoverflow.com/questions/42912227/how-to-add-data-to-a-specific-row-in-google-sheets-using-google-script
+      // https://stackoverflow.com/questions/11061470/from-array-to-setvalues-gives-cannot-convert-to
+      // https://stackoverflow.com/questions/22160707/incorrect-range-height-google-script
+  calculatedData.getRange(4, 9, low_modulus.length, 1).setValues(low_modulus);
+  calculatedData.getRange(4, 10, high_modulus.length, 1).setValues(high_modulus);
+  
+  // Send the calculated moduli into the sheet
+  outputSheet.getRange(5, 7, 1, 1).setValues([[Math.round(optimal_low_modulus.b * 100)/100]]);
+  outputSheet.getRange(5, 8, 1, 1).setValues([[low_strain_coef]]);
+  outputSheet.getRange(6, 7, 1, 1).setValues([[Math.round(optimal_high_modulus.b * 100)/100]]);
+  outputSheet.getRange(6, 8, 1, 1).setValues([[high_strain_coef]]);
+}
